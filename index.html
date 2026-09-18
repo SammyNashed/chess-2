@@ -704,7 +704,8 @@ document.getElementById('room').value = fromLink ||
 setView(0);
 render();
 loadArt();
-if (fromLink) document.getElementById('connect').click();   // opened from an invite link
+// opened from an invite link: wait for the deferred mqtt script to run first
+if (fromLink) addEventListener('load', () => document.getElementById('connect').click());
 </script>
 </body>
 </html>
