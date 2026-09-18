@@ -8,6 +8,11 @@ on a 14×14 cross board. No install, no accounts, no build step.
 - **Online** — everyone opens the same room code (or an invite link). Moves travel
   over a public MQTT broker, so there is no game server to run; the page itself is
   a static file.
+- **Open tables** — a table can list itself in a public lobby, so a visitor with
+  nobody to play against can walk into a game that is already waiting. Tables
+  announce themselves as retained messages and age out on their own.
+- **One click to play** — *Play now* seats you against three bots immediately;
+  *Play with friends* opens a table and copies the invite link.
 - **Offline** — hot-seat for four at one screen, or fill the empty seats with bots.
 - **Bots** — paranoid alpha-beta search with a quiescence pass, three strengths.
   They take free material, decline poisoned pieces, and hunt exposed kings.

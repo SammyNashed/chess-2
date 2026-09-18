@@ -4,9 +4,26 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Chess 2.0</title>
+<meta name="description" content="Four-player chess in your browser. No account, no install — send a link and play. Bots included.">
+<meta name="theme-color" content="#11141a">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Chess 2.0">
+<meta property="og:title" content="Chess 2.0 — four-player chess, no account needed">
+<meta property="og:description" content="Red, Blue, Yellow and Green on one board. Send a link to three friends, or fill the empty seats with bots.">
+<meta property="og:url" content="https://sammynashed.github.io/chess-2/">
+<meta property="og:image" content="https://sammynashed.github.io/chess-2/preview.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Chess 2.0 — four-player chess, no account needed">
+<meta name="twitter:description" content="Red, Blue, Yellow and Green on one board. Send a link to three friends, or fill the empty seats with bots.">
+<meta name="twitter:image" content="https://sammynashed.github.io/chess-2/preview.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='8' height='8' fill='%23e05a52'/><rect x='8' y='8' width='8' height='8' fill='%234c8ef7'/><rect x='8' width='8' height='8' fill='%23e5c04a'/><rect y='8' width='8' height='8' fill='%234cbf72'/></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700&display=swap" rel="stylesheet">
+<!-- a stylesheet blocks every script after it: load the font without holding up the game -->
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700&display=swap" rel="stylesheet"
+      media="print" onload="this.media='all'">
 <script defer src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
 <style>
   :root{
@@ -38,6 +55,14 @@
   .seat .sc{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
   .seat button{width:auto;padding:3px 9px;font-size:11px}
   #status{font-size:12px;color:var(--muted);margin-top:10px;min-height:16px}
+  .chk{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);margin-top:10px;
+       text-transform:none;letter-spacing:0;cursor:pointer}
+  .chk input{width:auto;margin:0;accent-color:var(--sel)}
+  .table{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:10px;background:#0f131a;margin-top:6px}
+  .table .nm{flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .table .mini{font-size:11px;color:var(--muted)}
+  .table button{width:auto;padding:4px 11px;font-size:12px}
+  .empty{font-size:12px;color:var(--muted);line-height:1.5;margin-top:6px}
   #log{margin-top:8px;max-height:190px;overflow:auto;font-size:12px;color:var(--muted);line-height:1.55}
   #log b{color:var(--text);font-weight:500}
   .boardwrap{position:relative}
@@ -75,15 +100,20 @@
     <p class="sub">Four-player free-for-all chess. Red &rarr; Blue &rarr; Yellow &rarr; Green.</p>
     <label>Your name</label>
     <input id="name" maxlength="14" placeholder="Player">
+    <div class="row">
+      <button id="play" class="primary">Play now</button>
+      <button id="friends">Play with friends</button>
+    </div>
     <label>Room code</label>
     <input id="room" maxlength="18" placeholder="e.g. sammy-1">
     <div class="row">
-      <button id="connect" class="primary">Join online</button>
+      <button id="connect">Join room</button>
       <button id="leave" disabled>Leave</button>
     </div>
     <div class="row">
       <button id="invite" disabled>Copy invite link</button>
     </div>
+    <label class="chk"><input type="checkbox" id="listed" checked> List this table publicly</label>
     <div id="status">Offline &mdash; hot-seat mode: you control every side.</div>
   </div>
 
@@ -104,6 +134,11 @@
       <button id="reset">New game</button>
     </div>
     <div id="log"></div>
+  </div>
+
+  <div class="panel">
+    <label style="margin-top:0">Open tables</label>
+    <div id="tables"></div>
   </div>
 </div>
 
@@ -491,7 +526,6 @@ for (let r=0;r<N;r++) for (let c=0;c<N;c++){
   boardEl.appendChild(d); cells.push(d);
 }
 
-const online = () => !!(mqttClient && mqttClient.connected);
 const botSeat = i => { const s = S.seats[i]; return s && s.bot ? s : null; };
 
 function myTurn(){
@@ -622,53 +656,194 @@ const esc = s => String(s).replace(/[<>&]/g, m => ({'<':'&lt;','>':'&gt;','&':'&
 const myName = () => (document.getElementById('name').value.trim() || 'Player').slice(0,14);
 
 /* --------------------------- network -------------------------- */
-let mqttClient = null, topic = '';
+/* One broker connection does two jobs: the shared state of the room you are in,
+   and a lobby of tables that anyone can walk into. Tables announce themselves on
+   chess2/lobby/<room> as retained messages with a timestamp, so the listing
+   survives a page load and stale tables simply age out.                       */
+const BROKER = 'wss://broker.emqx.io:8084/mqtt';
+const LOBBY = 'chess2/lobby/';
+const STALE = 75000;                  // a table must re-announce within this or it is dead
+let mqttClient = null, topic = '', room = '', lobby = new Map(), beat = 0, waiting = [];
+
+const inRoom = () => !!topic && !!(mqttClient && mqttClient.connected);
+const online = inRoom;
+const cleanCode = c => c.trim().toLowerCase().replace(/[^a-z0-9_-]/g,'').slice(0,18);
+const newCode = () => 'table-' + Array.from(crypto.getRandomValues(new Uint8Array(5)),
+                                           b => b.toString(36).padStart(2,'0')).join('').slice(0,8);
 function bump(){ S.v++; S.stamp = Date.now(); }
-function push(){ if (mqttClient && mqttClient.connected) mqttClient.publish(topic, JSON.stringify(S), {retain:true, qos:0}); }
+function push(){ if (inRoom()){ mqttClient.publish(topic, JSON.stringify(S), {retain:true, qos:0}); announce(); } }
 function status(t){ document.getElementById('status').innerHTML = t; }
 
-document.getElementById('connect').onclick = () => {
-  const room = document.getElementById('room').value.trim().toLowerCase().replace(/[^a-z0-9_-]/g,'');
-  if (!room) return status('Pick a room code first — everyone types the same one.');
+function ensureClient(then){
+  if (mqttClient && mqttClient.connected) return void (then && then());
+  if (then) waiting.push(then);
+  if (mqttClient) return;                       // a connection is already on its way
   if (typeof mqtt === 'undefined')
-    return status('Multiplayer library hasn\'t loaded yet — try again in a moment. Bots and hot-seat work regardless.');
-  topic = 'chess2/' + room + '/state';
-  status('Connecting…');
+    return status('Multiplayer library hasn\'t loaded yet \u2014 try again in a moment. Bots and hot-seat work regardless.');
+  mqttClient = mqtt.connect(BROKER, {clientId:'chess2_'+myId, reconnectPeriod:4000});
+  mqttClient.on('connect', () => {
+    mqttClient.subscribe(LOBBY + '+');
+    if (topic) mqttClient.subscribe(topic);
+    const q = waiting; waiting = [];
+    q.forEach(f => f());
+    renderLobby();
+  });
+  mqttClient.on('error', e => status('Connection problem: ' + esc(e.message)));
+  mqttClient.on('close', () => { if (inRoom()) status('Reconnecting\u2026'); });
+  mqttClient.on('message', onMessage);
+}
+
+function onMessage(t, payload){
+  const text = payload.toString();
+  if (t.indexOf(LOBBY) === 0){
+    const key = t.slice(LOBBY.length);
+    if (!text) lobby.delete(key);
+    else {
+      let e = null;
+      try { e = JSON.parse(text); } catch(_){}
+      if (e && typeof e.room === 'string' && Date.now() - e.ts < STALE) lobby.set(key, e);
+      // a table nobody has refreshed is gone: clear the retained beacon so the
+      // broker doesn't hand dead rooms to everyone who connects from now on
+      else { lobby.delete(key); mqttClient.publish(t, '', {retain:true}); }
+    }
+    return renderLobby();
+  }
+  if (t !== topic) return;
+  let inc; try { inc = JSON.parse(text); } catch(e){ return; }
+  if (!inc || typeof inc.v !== 'number') return;
+  if (inc.v < S.v || (inc.v === S.v && inc.stamp <= S.stamp)) return;
+  S = inc; sel = null; legal = [];
+  mySeat = S.seats.findIndex(s => s && s.id === myId);
+  render();
+}
+
+/* ---- the lobby ---- */
+const isListed = () => document.getElementById('listed').checked;
+function announce(){
+  if (!inRoom()) return;
+  if (!isListed()) return void mqttClient.publish(LOBBY + room, '', {retain:true});
+  mqttClient.publish(LOBBY + room, JSON.stringify({
+    room, ts: Date.now(), over: S.over,
+    humans: S.seats.filter(s => s && !s.bot).length,
+    bots:   S.seats.filter(s => s && s.bot).length,
+    open:   S.seats.filter(s => !s).length
+  }), {retain:true});
+}
+function unlist(){ if (mqttClient && mqttClient.connected && room) mqttClient.publish(LOBBY + room, '', {retain:true}); }
+
+function renderLobby(){
+  const wrap = document.getElementById('tables');
+  const now = Date.now();
+  const rows = [...lobby.values()]
+    .filter(e => now - e.ts < STALE && e.room !== room && e.open > 0 && !e.over)
+    .sort((a,b) => b.ts - a.ts).slice(0, 8);
+  wrap.innerHTML = '';
+  if (!rows.length){
+    wrap.innerHTML = '<div class="empty">' + (mqttClient && mqttClient.connected
+      ? 'No open tables right now. Start one with <b>Play with friends</b> \u2014 it will show up here for anyone else looking for a game.'
+      : 'Looking for open tables\u2026') + '</div>';
+    return;
+  }
+  for (const e of rows){
+    const d = document.createElement('div');
+    d.className = 'table';
+    d.innerHTML = '<div class="nm">'+esc(e.room)+'<div class="mini">'+
+      e.humans+' player'+(e.humans===1?'':'s')+(e.bots?' + '+e.bots+' bot'+(e.bots===1?'':'s'):'')+
+      ' \u00b7 '+e.open+' seat'+(e.open===1?'':'s')+' open</div></div>';
+    const b = document.createElement('button');
+    b.textContent = 'Join';
+    b.onclick = () => joinRoom(e.room, true);
+    d.appendChild(b);
+    wrap.appendChild(d);
+  }
+}
+setInterval(renderLobby, 20000);      // let stale tables fall off the list
+
+/* ---- rooms ---- */
+function takeSeat(){
+  if (mySeat >= 0) return;
+  const i = S.seats.findIndex(s => !s);
+  if (i < 0) return;
+  S.seats[i] = {id:myId, name:myName()};
+  mySeat = i;
+  bump(); push(); render();
+}
+
+function joinRoom(code, sitDown){
+  code = cleanCode(code);
+  if (!code) return status('Pick a room code first \u2014 everyone types the same one.');
+  if (room === code && inRoom()) return sitDown ? takeSeat() : undefined;
+  unlist();
+  topic = 'chess2/' + code + '/state';
+  room = code;
+  document.getElementById('room').value = code;
   // drop any offline game so the room's state always wins on join
   S = freshState(); S.v = 0; mySeat = -1; sel = null; legal = []; render();
-  mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt', {clientId:'chess2_'+myId, reconnectPeriod:3000});
-  mqttClient.on('connect', () => {
-    status('Online in <b>'+esc(room)+'</b>. Take a seat.');
+  status('Connecting\u2026');
+  ensureClient(() => {
+    mqttClient.subscribe(topic, () => setTimeout(() => {
+      if (S.v === 0){ S.v = 1; S.stamp = Date.now(); push(); }   // empty room: we open the table
+      if (sitDown) takeSeat();
+      announce();
+      render();
+    }, 2500));
+    location.hash = 'room=' + code;
     document.getElementById('connect').disabled = true;
     document.getElementById('leave').disabled = false;
     document.getElementById('invite').disabled = false;
-    location.hash = 'room=' + room;
-    mqttClient.subscribe(topic, () => setTimeout(() => {
-      if (S.v === 0){ S.v = 1; S.stamp = Date.now(); push(); render(); }   // empty room: we open the table
-    }, 2500));
+    status('Online in <b>'+esc(code)+'</b>. Take a seat.');
+    clearInterval(beat); beat = setInterval(announce, 15000);
     render();
   });
-  mqttClient.on('error', e => status('Connection problem: ' + e.message));
-  mqttClient.on('close', () => { if (document.getElementById('leave').disabled === false) status('Reconnecting…'); });
-  mqttClient.on('message', (_t, payload) => {
-    let inc; try { inc = JSON.parse(payload.toString()); } catch(e){ return; }
-    if (!inc || typeof inc.v !== 'number') return;
-    if (inc.v < S.v || (inc.v === S.v && inc.stamp <= S.stamp)) return;
-    S = inc; sel = null; legal = [];
-    mySeat = S.seats.findIndex(s => s && s.id === myId);
-    render();
-  });
+}
+
+async function copyInvite(){
+  const link = location.href;
+  try {
+    await navigator.clipboard.writeText(link);
+    status('Invite link copied \u2014 send it to three friends.<br><b>'+esc(link)+'</b>');
+  } catch(e){ status('Send them this link:<br><b>'+esc(link)+'</b>'); }
+}
+
+/* ---- buttons ---- */
+document.getElementById('play').onclick = () => {
+  const level = document.getElementById('level').value;
+  if (!inRoom()){ S = freshState(); mySeat = -1; }
+  for (let i=0;i<4;i++)
+    if (i !== (mySeat < 0 ? 0 : mySeat) && !S.seats[i])
+      S.seats[i] = {id:myId, name:LEVELS[level].label + ' bot', bot:true, level};
+  setView(mySeat < 0 ? 0 : mySeat);
+  sel = null; legal = [];
+  bump(); push(); render();
+  if (!inRoom()) status('Playing Red against three bots. Your move.');
 };
+
+document.getElementById('friends').onclick = () => {
+  joinRoom(newCode(), true);
+  setTimeout(copyInvite, 3200);
+};
+
+document.getElementById('connect').onclick = () => joinRoom(document.getElementById('room').value, false);
+
+document.getElementById('listed').onchange = announce;
 
 document.getElementById('leave').onclick = () => {
   if (mySeat >= 0){ S.seats[mySeat] = null; mySeat = -1; bump(); push(); }
-  if (mqttClient){ mqttClient.end(true); mqttClient = null; }
+  unlist();
+  if (mqttClient && mqttClient.connected && topic) mqttClient.unsubscribe(topic);
+  clearInterval(beat); beat = 0;
+  topic = ''; room = '';
+  location.hash = '';
   document.getElementById('connect').disabled = false;
   document.getElementById('leave').disabled = true;
   document.getElementById('invite').disabled = true;
-  status('Offline — hot-seat mode: you control every side.');
+  status('Offline \u2014 hot-seat mode: you control every side.');
   render();
 };
+
+addEventListener('beforeunload', () => { if (mySeat >= 0 || S.seats.every(x => !x || x.id === myId)) unlist(); });
+
+document.getElementById('invite').onclick = copyInvite;
 
 document.getElementById('view').onclick = () => setView(view + 1);
 
@@ -703,9 +878,12 @@ document.getElementById('room').value = fromLink ||
   'table-' + Array.from(crypto.getRandomValues(new Uint8Array(5)), b => b.toString(36).padStart(2,'0')).join('').slice(0,8);
 setView(0);
 render();
+renderLobby();
 loadArt();
-// opened from an invite link: wait for the deferred mqtt script to run first
-if (fromLink) addEventListener('load', () => document.getElementById('connect').click());
+addEventListener('load', () => {
+  if (fromLink) joinRoom(fromLink, false);   // opened from an invite link
+  else ensureClient();                       // otherwise just watch the lobby
+});
 </script>
 </body>
 </html>
