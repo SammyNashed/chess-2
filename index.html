@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
 <style>
   :root{
     --bg:#11141a; --panel:#181c24; --line:#262c38; --text:#e8ecf3; --muted:#8e98ab;
@@ -630,6 +630,8 @@ function status(t){ document.getElementById('status').innerHTML = t; }
 document.getElementById('connect').onclick = () => {
   const room = document.getElementById('room').value.trim().toLowerCase().replace(/[^a-z0-9_-]/g,'');
   if (!room) return status('Pick a room code first — everyone types the same one.');
+  if (typeof mqtt === 'undefined')
+    return status('Multiplayer library hasn\'t loaded yet — try again in a moment. Bots and hot-seat work regardless.');
   topic = 'chess2/' + room + '/state';
   status('Connecting…');
   // drop any offline game so the room's state always wins on join
