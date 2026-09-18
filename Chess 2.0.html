@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chess 2.0</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<style>
+  :root{
+    --bg:#11141a; --panel:#181c24; --line:#262c38; --text:#e8ecf3; --muted:#8e98ab;
+    --light:#3a4252; --dark:#2b323f; --sel:#f2c14e; --dot:rgba(242,193,78,.75);
+    --p0:#e05a52; --p1:#4c8ef7; --p2:#e5c04a; --p3:#4cbf72;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:Outfit,system-ui,sans-serif;
+       display:flex;gap:18px;padding:18px;align-items:flex-start;flex-wrap:wrap;justify-content:center}
+  h1{font-size:20px;margin:0 0 2px;letter-spacing:.5px}
+  h1 span{color:var(--sel)}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;width:300px}
+  .panel+.panel{margin-top:14px}
+  .sub{color:var(--muted);font-size:12px;margin:0 0 10px}
+  label{display:block;font-size:11px;color:var(--muted);margin:8px 0 3px;text-transform:uppercase;letter-spacing:.8px}
+  input,button,select{font-family:inherit;font-size:14px;border-radius:9px;border:1px solid var(--line);
+       background:#0f131a;color:var(--text);padding:8px 10px;width:100%}
+  button{background:#232a36;cursor:pointer;border-color:#333c4c;transition:.15s}
+  button:hover:not(:disabled){background:#2e3746}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button.primary{background:var(--sel);color:#1a1405;border-color:var(--sel);font-weight:700}
+  .row{display:flex;gap:8px;margin-top:10px}
+  .seat{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:10px;border:1px solid transparent;margin-top:6px;background:#0f131a}
+  .seat.turn{border-color:var(--sel);box-shadow:0 0 0 2px rgba(242,193,78,.12) inset}
+  .seat.out{opacity:.45}
+  .chip{width:14px;height:14px;border-radius:4px;flex:0 0 auto}
+  .seat .nm{flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .seat .sc{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .seat button{width:auto;padding:3px 9px;font-size:11px}
+  #status{font-size:12px;color:var(--muted);margin-top:10px;min-height:16px}
+  #log{margin-top:8px;max-height:190px;overflow:auto;font-size:12px;color:var(--muted);line-height:1.55}
+  #log b{color:var(--text);font-weight:500}
+  .boardwrap{position:relative}
+  #board{display:grid;grid-template:repeat(14,1fr)/repeat(14,1fr);
+     transform:rotate(calc(var(--rot,0) * -90deg));transition:transform .5s cubic-bezier(.4,0,.2,1);
+     width:min(86vmin,760px);aspect-ratio:1;background:#0d1015;border-radius:12px;padding:6px;
+     border:1px solid var(--line);box-shadow:0 18px 60px rgba(0,0,0,.5)}
+  .sq{position:relative;background:var(--dark)}
+  .sq.lt{background:var(--light)}
+  .sq.void{background:transparent;pointer-events:none}
+  .sq.home{box-shadow:inset 0 0 0 1px rgba(255,255,255,.07)}
+  .sq.sel{background:var(--sel)!important}
+  .sq.last{box-shadow:inset 0 0 0 3px rgba(242,193,78,.35)}
+  .sq.mv::after{content:"";position:absolute;inset:38%;border-radius:50%;background:var(--dot)}
+  .sq.cap::after{content:"";position:absolute;inset:4%;border-radius:50%;border:3px solid var(--dot);background:none}
+  .pc{position:absolute;inset:7%;background-color:currentColor;
+      transform:rotate(calc(var(--rot,0) * 90deg));
+      -webkit-mask-position:center;mask-position:center;-webkit-mask-size:contain;mask-size:contain;
+      -webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;
+      display:flex;align-items:center;justify-content:center;font-size:0;pointer-events:none;
+      filter:drop-shadow(0 2px 2px rgba(0,0,0,.55))}
+  .pc.glyph{-webkit-mask-image:none!important;mask-image:none!important;background:none;
+      font-size:min(5.2vmin,44px);line-height:1;color:currentColor}
+  .banner{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+      background:rgba(10,12,16,.82);border-radius:12px;font-size:28px;font-weight:700;text-align:center;padding:20px}
+  .banner.on{display:flex}
+  @media(max-width:900px){body{padding:10px}#board{width:96vw}}
+</style>
+</head>
+<body>
+
+<div>
+  <div class="panel">
+    <h1>Chess <span>2.0</span></h1>
+    <p class="sub">Four-player free-for-all chess. Red &rarr; Blue &rarr; Yellow &rarr; Green.</p>
+    <label>Your name</label>
+    <input id="name" maxlength="14" placeholder="Player">
+    <label>Room code</label>
+    <input id="room" maxlength="18" placeholder="e.g. sammy-1">
+    <div class="row">
+      <button id="connect" class="primary">Join online</button>
+      <button id="leave" disabled>Leave</button>
+    </div>
+    <div class="row">
+      <button id="invite" disabled>Copy invite link</button>
+    </div>
+    <div id="status">Offline &mdash; hot-seat mode: you control every side.</div>
+  </div>
+
+  <div class="panel">
+    <label style="margin-top:0">Players</label>
+    <div id="seats"></div>
+    <label>Bot strength</label>
+    <select id="level">
+      <option value="casual">Casual &mdash; quick, still sees tactics</option>
+      <option value="solid" selected>Solid &mdash; punishes loose pieces</option>
+      <option value="sharp">Sharp &mdash; slow and nasty</option>
+    </select>
+    <div class="row">
+      <button id="view">View: Red</button>
+      <button id="resign" disabled>Resign</button>
+    </div>
+    <div class="row">
+      <button id="reset">New game</button>
+    </div>
+    <div id="log"></div>
+  </div>
+</div>
+
+<div class="boardwrap">
+  <div id="board"></div>
+  <div class="banner" id="banner"></div>
+</div>
+
+<script>
+/* ---------------------------------------------------------------
+   Chess 2.0 — 4-player chess, one file.
+   Piece art: Wikimedia Commons Cburnett SVG set (used as CSS masks
+   so one set of files renders in four colours).
+   Networking: public MQTT broker over WebSocket (no server of ours).
+----------------------------------------------------------------*/
+const N = 14, COLORS = ['var(--p0)','var(--p1)','var(--p2)','var(--p3)'];
+const NAMES = ['Red','Blue','Yellow','Green'];
+const VALUE = {P:1,N:3,B:5,R:5,Q:9,K:20};
+const GLYPH = {K:'♚',Q:'♛',R:'♜',B:'♝',N:'♞',P:'♟'};
+const ART = {K:'f/f0/Chess_kdt45.svg',Q:'4/47/Chess_qdt45.svg',R:'f/ff/Chess_rdt45.svg',
+             B:'9/98/Chess_bdt45.svg',N:'e/ef/Chess_ndt45.svg',P:'c/c7/Chess_pdt45.svg'};
+// pawn march direction per player: 0 Red(bottom) 1 Blue(left) 2 Yellow(top) 3 Green(right)
+const FWD = [[-1,0],[0,1],[1,0],[0,-1]];
+
+const idx = (r,c) => r*N+c;
+const onBoard = (r,c) => r>=0 && c>=0 && r<N && c<N && !((r<3||r>10) && (c<3||c>10));
+
+/* ------------------------- game state ------------------------- */
+let S = null, myId = Math.random().toString(36).slice(2,10), mySeat = -1;
+let sel = null, legal = [], masks = {}, artOK = false;
+let view = 0, autoView = -1;   // view = which colour sits at the bottom of MY screen
+
+function freshState(){
+  const board = new Array(N*N).fill(null);
+  const put = (r,c,p,t) => board[idx(r,c)] = {p, t};
+  const A = ['R','N','B','Q','K','B','N','R'];       // red & blue: queen before king
+  const B = ['R','N','B','K','Q','B','N','R'];       // yellow & green: mirrored
+  for (let i=0;i<8;i++){
+    const k = 3+i;
+    put(13,k,0,A[i]); put(12,k,0,'P');               // Red   — bottom
+    put(k,0,1,A[i]);  put(k,1,1,'P');                // Blue  — left
+    put(0,k,2,B[i]);  put(1,k,2,'P');                // Yellow— top
+    put(k,13,3,B[i]); put(k,12,3,'P');               // Green — right
+  }
+  return {v:1, stamp:Date.now(), seats:[null,null,null,null], board,
+          turn:0, alive:[true,true,true,true], scores:[0,0,0,0],
+          moved:{}, last:null, over:false, log:[]};
+}
+
+/* ---------------------- move generation ----------------------- */
+function slide(b,r,c,dirs,out){
+  for (const [dr,dc] of dirs){
+    let rr=r+dr, cc=c+dc;
+    while (onBoard(rr,cc)){
+      const t = b[idx(rr,cc)];
+      if (!t){ out.push([rr,cc]); }
+      else { if (t.p !== b[idx(r,c)].p) out.push([rr,cc]); break; }
+      rr+=dr; cc+=dc;
+    }
+  }
+}
+const ORTH = [[1,0],[-1,0],[0,1],[0,-1]];
+const DIAG = [[1,1],[1,-1],[-1,1],[-1,-1]];
+const JUMP = [[1,2],[2,1],[-1,2],[-2,1],[1,-2],[2,-1],[-1,-2],[-2,-1]];
+
+function movesFor(st, r, c, forAttack){
+  const b = st.board, pc = b[idx(r,c)];
+  if (!pc) return [];
+  const out = [];
+  const free = (rr,cc) => onBoard(rr,cc) && !b[idx(rr,cc)];
+  const foe  = (rr,cc) => onBoard(rr,cc) && b[idx(rr,cc)] && b[idx(rr,cc)].p !== pc.p;
+  switch (pc.t){
+    case 'R': slide(b,r,c,ORTH,out); break;
+    case 'B': slide(b,r,c,DIAG,out); break;
+    case 'Q': slide(b,r,c,ORTH.concat(DIAG),out); break;
+    case 'N':
+      for (const [dr,dc] of JUMP){ const rr=r+dr, cc=c+dc;
+        if (onBoard(rr,cc) && (!b[idx(rr,cc)] || b[idx(rr,cc)].p!==pc.p)) out.push([rr,cc]); }
+      break;
+    case 'K':
+      for (const [dr,dc] of ORTH.concat(DIAG)){ const rr=r+dr, cc=c+dc;
+        if (onBoard(rr,cc) && (!b[idx(rr,cc)] || b[idx(rr,cc)].p!==pc.p)) out.push([rr,cc]); }
+      if (!forAttack) castles(st,r,c,pc,out);
+      break;
+    case 'P': {
+      const [dr,dc] = FWD[pc.p];
+      const start = (pc.p===0 && r===12)||(pc.p===2 && r===1)||(pc.p===1 && c===1)||(pc.p===3 && c===12);
+      if (!forAttack){
+        if (free(r+dr,c+dc)){
+          out.push([r+dr,c+dc]);
+          if (start && free(r+2*dr,c+2*dc)) out.push([r+2*dr,c+2*dc]);
+        }
+      }
+      const caps = dr ? [[dr,-1],[dr,1]] : [[-1,dc],[1,dc]];
+      for (const [ar,ac] of caps){
+        const rr=r+ar, cc=c+ac;
+        if (forAttack) { if (onBoard(rr,cc)) out.push([rr,cc]); }
+        else if (foe(rr,cc)) out.push([rr,cc]);
+      }
+      break; }
+  }
+  return out;
+}
+
+function castles(st,r,c,pc,out){
+  if (st.moved[pc.p+':'+r+','+c]) return;
+  const perp = FWD[pc.p][0] ? [[0,1],[0,-1]] : [[1,0],[-1,0]];
+  for (const [dr,dc] of perp){
+    let rr=r+dr, cc=c+dc, steps=0;
+    while (onBoard(rr,cc) && !st.board[idx(rr,cc)]){ rr+=dr; cc+=dc; steps++; }
+    const t = onBoard(rr,cc) ? st.board[idx(rr,cc)] : null;
+    if (t && t.p===pc.p && t.t==='R' && steps>=2 && !st.moved[pc.p+':'+rr+','+cc])
+      out.push([r+2*dr, c+2*dc, 'castle', rr, cc]);
+  }
+}
+
+function attacked(st, r, c, byPlayers){
+  for (let i=0;i<N*N;i++){
+    const pc = st.board[i];
+    if (!pc || !byPlayers.includes(pc.p)) continue;
+    const pr = Math.floor(i/N), pcol = i%N;
+    for (const m of movesFor(st, pr, pcol, true))
+      if (m[0]===r && m[1]===c) return true;
+  }
+  return false;
+}
+function findKing(st,p){
+  for (let i=0;i<N*N;i++){ const q=st.board[i]; if (q && q.p===p && q.t==='K') return [Math.floor(i/N), i%N]; }
+  return null;
+}
+
+/* ------------------------- applying a move -------------------- */
+function applyMove(st, from, to){
+  const b = st.board, pc = b[idx(from[0],from[1])];
+  if (!pc) return false;
+  const target = b[idx(to[0],to[1])];
+  let note = NAMES[pc.p]+' '+pc.t+' '+sqName(from)+'→'+sqName(to);
+
+  if (to[2] === 'castle'){
+    const rook = b[idx(to[3],to[4])];
+    b[idx(to[3],to[4])] = null;
+    const back = [Math.sign(to[0]-from[0]), Math.sign(to[1]-from[1])];
+    b[idx(to[0]-back[0], to[1]-back[1])] = rook;
+    note = NAMES[pc.p]+' castles';
+  } else if (target){
+    st.scores[pc.p] += VALUE[target.t];
+    note += ' x'+target.t;
+    if (target.t === 'K'){
+      st.alive[target.p] = false;
+      wipe(st, target.p);
+      note += ' — '+NAMES[target.p]+' is eliminated, their army leaves the board!';
+    }
+  }
+  st.moved[pc.p+':'+from[0]+','+from[1]] = 1;
+  b[idx(from[0],from[1])] = null;
+  b[idx(to[0],to[1])] = pc;
+
+  // promotion
+  if (pc.t === 'P'){
+    const p = pc.p, r = to[0], c = to[1];
+    if ((p===0 && r<=3)||(p===2 && r>=10)||(p===1 && c>=10)||(p===3 && c<=3)){ pc.t='Q'; note += ' =Q'; }
+  }
+  st.last = [from[0],from[1],to[0],to[1]];
+  st.log.unshift(note);
+  st.log = st.log.slice(0,60);
+
+  // next living player
+  let t = st.turn;
+  for (let i=0;i<4;i++){ t = (t+1)%4; if (st.alive[t]) break; }
+  st.turn = t;
+  if (st.alive.filter(Boolean).length <= 1) st.over = true;
+  return true;
+}
+// an eliminated player's army is swept off the board
+function wipe(st, p){
+  for (let i=0;i<N*N;i++) if (st.board[i] && st.board[i].p === p) st.board[i] = null;
+}
+function sqName([r,c]){ return String.fromCharCode(97+c)+(N-r); }
+
+/* --------------------------- the bots ------------------------- */
+/* Paranoid alpha-beta over the 4-player tree: the bot maximises its own
+   evaluation and assumes every other army plays to minimise it. The score
+   still counts what the opponents lose, so they won't hand material away
+   just to spite the bot. Iterative deepening under a time budget, captures
+   searched out with a quiescence pass so nothing gets left hanging.      */
+const LEVELS = {
+  casual: {label:'Casual', depth:3, ms:400,  noise:45},
+  solid:  {label:'Solid',  depth:5, ms:1100, noise:0},
+  sharp:  {label:'Sharp',  depth:7, ms:2600, noise:0}
+};
+const ABORT = {abort:true};
+let nodes = 0, deadline = 0, thinking = false;
+
+function allMoves(st, p){
+  const out = [];
+  for (let i=0;i<N*N;i++){
+    const q = st.board[i];
+    if (!q || q.p !== p) continue;
+    const r = Math.floor(i/N), c = i%N;
+    for (const m of movesFor(st, r, c, false)){
+      const victim = st.board[idx(m[0],m[1])];
+      out.push({fr:r, fc:c, to:m, cap:!!victim,
+                order: victim ? 1000 + VALUE[victim.t]*10 - VALUE[q.t] : 0});
+    }
+  }
+  out.sort((a,b) => b.order - a.order);
+  return out;
+}
+
+function simMove(st, fr, fc, to){
+  const b = st.board, fi = idx(fr,fc), ti = idx(to[0],to[1]);
+  const pc = b[fi], cap = b[ti];
+  const u = {fi, ti, pc, cap, turn:st.turn, promo:false, rook:null, wiped:null, alive:null, mkey:null};
+  if (to[2] === 'castle'){
+    const ri = idx(to[3],to[4]), rook = b[ri];
+    const back = [Math.sign(to[0]-fr), Math.sign(to[1]-fc)];
+    const rt = idx(to[0]-back[0], to[1]-back[1]);
+    b[ri] = null; b[rt] = rook; u.rook = [ri, rt, rook];
+  }
+  b[fi] = null; b[ti] = pc;
+  if (cap && cap.t === 'K'){
+    u.alive = st.alive.slice(); st.alive[cap.p] = false;
+    u.wiped = [];
+    for (let i=0;i<N*N;i++) if (b[i] && b[i].p === cap.p){ u.wiped.push([i, b[i]]); b[i] = null; }
+  }
+  if (pc.t === 'P'){
+    const p = pc.p, r = to[0], c = to[1];
+    if ((p===0&&r<=3)||(p===2&&r>=10)||(p===1&&c>=10)||(p===3&&c<=3)){ pc.t = 'Q'; u.promo = true; }
+  }
+  const k = pc.p+':'+fr+','+fc;
+  if (!st.moved[k]){ st.moved[k] = 1; u.mkey = k; }
+  let t = st.turn;
+  for (let i=0;i<4;i++){ t = (t+1)%4; if (st.alive[t]) break; }
+  st.turn = t;
+  return u;
+}
+
+function unMove(st, u){
+  const b = st.board;
+  st.turn = u.turn;
+  if (u.mkey) delete st.moved[u.mkey];
+  if (u.promo) u.pc.t = 'P';
+  if (u.wiped) for (const [i,q] of u.wiped) b[i] = q;
+  if (u.alive) st.alive = u.alive;
+  b[u.fi] = u.pc; b[u.ti] = u.cap;
+  if (u.rook){ const [ri, rt, rook] = u.rook; b[rt] = null; b[ri] = rook; }
+}
+
+function evaluate(st, me){
+  if (!st.alive[me]) return -1e8;
+  const mat = [0,0,0,0], pos = [0,0,0,0];
+  for (let i=0;i<N*N;i++){
+    const q = st.board[i];
+    if (!q) continue;
+    mat[q.p] += VALUE[q.t] * 100;
+    const r = Math.floor(i/N), c = i%N;
+    const centre = 13 - (Math.abs(r-6.5) + Math.abs(c-6.5));   // 0 (corner) .. 13 (middle)
+    if (q.t === 'K') pos[q.p] -= centre * 4;                    // kings keep out of the middle
+    else if (q.t === 'P'){
+      const [dr,dc] = FWD[q.p];
+      const march = dr ? (dr<0 ? 12-r : r-1) : (dc>0 ? c-1 : 12-c);
+      pos[q.p] += centre * 2 + march * 6;
+    }
+    else pos[q.p] += centre * 3;
+  }
+  // summed, not averaged: knocking a player out has to be worth something,
+  // and the weight under 1 keeps the bot from trading itself down to nothing
+  // just to hurt someone (an even trade in a 4-way game helps the other two).
+  let others = 0, worst = 0;
+  for (let p=0;p<4;p++){
+    if (p === me || !st.alive[p]) continue;
+    const v = mat[p] + pos[p];
+    others += v;
+    if (v > worst) worst = v;                                   // lean on the leader
+  }
+  return (mat[me] + pos[me]) - 0.35*others - 0.15*worst;
+}
+
+function quiesce(st, me, alpha, beta, depth){
+  if ((++nodes & 511) === 0 && performance.now() > deadline) throw ABORT;
+  const stand = evaluate(st, me);
+  const mine = st.turn === me;
+  if (depth <= 0 || st.alive.filter(Boolean).length <= 1) return stand;
+  if (mine){ if (stand >= beta) return beta; if (stand > alpha) alpha = stand; }
+  else     { if (stand <= alpha) return alpha; if (stand < beta) beta = stand; }
+  for (const m of allMoves(st, st.turn)){
+    if (!m.cap) continue;
+    const u = simMove(st, m.fr, m.fc, m.to);
+    const v = quiesce(st, me, alpha, beta, depth-1);
+    unMove(st, u);
+    if (mine){ if (v >= beta) return beta; if (v > alpha) alpha = v; }
+    else     { if (v <= alpha) return alpha; if (v < beta) beta = v; }
+  }
+  return mine ? alpha : beta;
+}
+
+function negamax(st, me, depth, alpha, beta){
+  if ((++nodes & 511) === 0 && performance.now() > deadline) throw ABORT;
+  if (!st.alive[me]) return -1e8 - depth;
+  if (st.alive.filter(Boolean).length <= 1) return 1e8 + depth;
+  if (depth <= 0) return quiesce(st, me, alpha, beta, 4);
+  const mine = st.turn === me;
+  const moves = allMoves(st, st.turn);
+  if (!moves.length){                       // nothing to play: the turn simply passes
+    const turn = st.turn;
+    let t = turn;
+    for (let i=0;i<4;i++){ t = (t+1)%4; if (st.alive[t]) break; }
+    if (t === turn) return evaluate(st, me);
+    st.turn = t;
+    const v = negamax(st, me, depth-1, alpha, beta);
+    st.turn = turn;
+    return v;
+  }
+  for (const m of moves){
+    const u = simMove(st, m.fr, m.fc, m.to);
+    const v = negamax(st, me, depth-1, alpha, beta);
+    unMove(st, u);
+    if (mine){ if (v > alpha) alpha = v; }
+    else     { if (v < beta)  beta  = v; }
+    if (alpha >= beta) break;
+  }
+  return mine ? alpha : beta;
+}
+
+function pickMove(live, me, level){
+  const L = LEVELS[level] || LEVELS.solid;
+  // Search a private copy. Running out of time throws from deep inside the tree,
+  // which skips the pending unMove()s, so the searched position must never be
+  // the one the players are looking at.
+  const st = {board: live.board.map(q => q && {...q}), turn: live.turn,
+              alive: live.alive.slice(), moved: Object.assign({}, live.moved)};
+  const moves = allMoves(st, me);
+  if (!moves.length) return null;
+  nodes = 0; deadline = performance.now() + L.ms;
+  let best = moves[0], scored = moves.map(m => ({m, v:-Infinity}));
+  for (let d = 1; d <= L.depth; d++){
+    try {
+      const round = [];
+      let alpha = -Infinity;
+      for (const m of moves){
+        const u = simMove(st, m.fr, m.fc, m.to);
+        const v = negamax(st, me, d-1, alpha, Infinity);
+        unMove(st, u);
+        round.push({m, v});
+        if (v > alpha) alpha = v;
+      }
+      round.sort((a,b) => b.v - a.v);
+      scored = round;
+      best = round[0].m;
+      moves.length = 0;                      // search the best moves first next time round
+      for (const r of round) moves.push(r.m);
+    } catch(e){
+      if (e !== ABORT) throw e;
+      break;
+    }
+  }
+  if (L.noise){                              // casual picks from the near-best moves
+    const pool = scored.filter(s => s.v >= scored[0].v - L.noise);
+    best = pool[Math.floor(Math.random()*pool.length)].m;
+  }
+  return best;
+}
+
+/* --------------------------- artwork -------------------------- */
+async function loadArt(){
+  try{
+    const got = await Promise.all(Object.entries(ART).map(async ([t,path]) => {
+      const res = await fetch('https://upload.wikimedia.org/wikipedia/commons/'+path);
+      if (!res.ok) throw new Error(res.status);
+      return [t, 'url("data:image/svg+xml;base64,'+btoa(unescape(encodeURIComponent(await res.text())))+'")'];
+    }));
+    masks = Object.fromEntries(got); artOK = true;
+  } catch(e){ artOK = false; console.warn('piece art unavailable, using glyphs', e); }
+  render();
+}
+
+/* ----------------------------- UI ----------------------------- */
+const boardEl = document.getElementById('board');
+const cells = [];
+for (let r=0;r<N;r++) for (let c=0;c<N;c++){
+  const d = document.createElement('div');
+  d.className = 'sq' + (onBoard(r,c) ? ((r+c)%2 ? ' lt' : '') : ' void');
+  d.dataset.r = r; d.dataset.c = c;
+  d.addEventListener('click', () => click(r,c));
+  boardEl.appendChild(d); cells.push(d);
+}
+
+const online = () => !!(mqttClient && mqttClient.connected);
+const botSeat = i => { const s = S.seats[i]; return s && s.bot ? s : null; };
+
+function myTurn(){
+  if (S.over || botSeat(S.turn)) return false;
+  if (online()) return S.seats[S.turn] && S.seats[S.turn].id === myId;
+  return true; // hot-seat
+}
+
+// I run a bot if I added it — or if its owner has gone quiet and left it stuck
+function iDriveBot(i){
+  const s = botSeat(i);
+  if (!s || S.over) return false;
+  return !online() || s.id === myId || Date.now() - S.stamp > 25000;
+}
+
+function maybeBot(){
+  if (thinking || !iDriveBot(S.turn)) return;
+  const seat = S.turn, level = S.seats[seat].level;
+  thinking = true;
+  renderSeats();                       // paint "thinking" before the search blocks the thread
+  setTimeout(() => {
+    let mv = null;
+    try { mv = pickMove(S, seat, level); }
+    catch(e){ console.error('bot failed', e); }
+    finally { thinking = false; }
+    if (mv && S.turn === seat && !S.over){
+      applyMove(S, [mv.fr, mv.fc], mv.to);
+      bump(); push();
+    }
+    sel = null; legal = [];
+    render();
+  }, 140);
+}
+
+function click(r,c){
+  if (!S || S.over) return;
+  const pc = S.board[idx(r,c)];
+  if (sel){
+    const m = legal.find(x => x[0]===r && x[1]===c);
+    if (m){
+      applyMove(S, sel, m);
+      sel = null; legal = [];
+      bump(); push(); render();
+      return;
+    }
+  }
+  if (pc && pc.p === S.turn && myTurn()){
+    sel = [r,c]; legal = movesFor(S, r, c, false);
+  } else { sel = null; legal = []; }
+  render();
+}
+
+function setView(k){
+  view = ((k % 4) + 4) % 4;
+  boardEl.style.setProperty('--rot', view);
+  const b = document.getElementById('view');
+  b.textContent = 'View: ' + NAMES[view];
+  b.style.color = COLORS[view];
+}
+
+function render(){
+  // your own colour always faces you; other players keep their own orientation
+  if (mySeat >= 0 && mySeat !== autoView){ autoView = mySeat; setView(mySeat); }
+  if (mySeat < 0) autoView = -1;
+  for (let r=0;r<N;r++) for (let c=0;c<N;c++){
+    const el = cells[idx(r,c)];
+    if (!onBoard(r,c)) continue;
+    el.className = 'sq' + ((r+c)%2 ? ' lt' : '');
+    if (S.last && ((S.last[0]===r&&S.last[1]===c)||(S.last[2]===r&&S.last[3]===c))) el.classList.add('last');
+    if (sel && sel[0]===r && sel[1]===c) el.classList.add('sel');
+    const m = legal.find(x => x[0]===r && x[1]===c);
+    if (m) el.classList.add(S.board[idx(r,c)] ? 'cap' : 'mv');
+    el.innerHTML = '';
+    const pc = S.board[idx(r,c)];
+    if (pc){
+      const p = document.createElement('div');
+      p.className = 'pc' + (artOK ? '' : ' glyph');
+      p.style.color = COLORS[pc.p];
+      if (artOK){ p.style.webkitMaskImage = masks[pc.t]; p.style.maskImage = masks[pc.t]; }
+      else p.textContent = GLYPH[pc.t];
+      el.appendChild(p);
+    }
+  }
+  renderSeats();
+  const b = document.getElementById('banner');
+  if (S.over){
+    const w = S.alive.indexOf(true);
+    b.className = 'banner on';
+    b.innerHTML = w >= 0 ? NAMES[w]+' wins Chess 2.0' : 'Everybody lost.';
+    b.style.color = w >= 0 ? COLORS[w] : '#fff';
+  } else b.className = 'banner';
+  document.getElementById('log').innerHTML =
+    S.log.map((l,i) => i ? l : '<b>'+l+'</b>').join('<br>');
+  document.getElementById('resign').disabled = !(mySeat >= 0 && S.alive[mySeat] && !S.over);
+  maybeBot();
+}
+
+function renderSeats(){
+  const wrap = document.getElementById('seats');
+  wrap.innerHTML = '';
+  for (let i=0;i<4;i++){
+    const seat = S.seats[i];
+    const d = document.createElement('div');
+    d.className = 'seat' + (S.turn===i && !S.over ? ' turn' : '') + (S.alive[i] ? '' : ' out');
+    const k = findKing(S,i);
+    const inCheck = S.alive[i] && k && attacked(S,k[0],k[1],[0,1,2,3].filter(x=>x!==i && S.alive[x]));
+    d.innerHTML = '<div class="chip" style="background:'+COLORS[i]+'"></div>'+
+      '<div class="nm">'+NAMES[i]+(seat ? ' — '+esc(seat.name) : (online() ? ' — open' : ''))+
+      (thinking && S.turn === i ? ' <span style="color:var(--muted)">thinking…</span>' : '')+
+      (S.alive[i] ? (inCheck ? ' <span style="color:var(--sel)">check</span>' : '') : ' — out')+'</div>'+
+      '<div class="sc">'+S.scores[i]+'</div>';
+    const add = (text, fn) => { const b = document.createElement('button'); b.textContent = text; b.onclick = fn; d.appendChild(b); };
+    if (!seat){
+      if (online() && mySeat < 0)
+        add('Sit', () => { S.seats[i] = {id:myId, name:myName()}; mySeat = i; bump(); push(); render(); });
+      add('+ Bot', () => {
+        const level = document.getElementById('level').value;
+        S.seats[i] = {id:myId, name:LEVELS[level].label + ' bot', bot:true, level};
+        bump(); push(); render();
+      });
+    } else if (seat.bot && (!online() || seat.id === myId)){
+      add('✕', () => { S.seats[i] = null; bump(); push(); render(); });
+    }
+    wrap.appendChild(d);
+  }
+}
+const esc = s => String(s).replace(/[<>&]/g, m => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[m]));
+const myName = () => (document.getElementById('name').value.trim() || 'Player').slice(0,14);
+
+/* --------------------------- network -------------------------- */
+let mqttClient = null, topic = '';
+function bump(){ S.v++; S.stamp = Date.now(); }
+function push(){ if (mqttClient && mqttClient.connected) mqttClient.publish(topic, JSON.stringify(S), {retain:true, qos:0}); }
+function status(t){ document.getElementById('status').innerHTML = t; }
+
+document.getElementById('connect').onclick = () => {
+  const room = document.getElementById('room').value.trim().toLowerCase().replace(/[^a-z0-9_-]/g,'');
+  if (!room) return status('Pick a room code first — everyone types the same one.');
+  topic = 'chess2/' + room + '/state';
+  status('Connecting…');
+  // drop any offline game so the room's state always wins on join
+  S = freshState(); S.v = 0; mySeat = -1; sel = null; legal = []; render();
+  mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt', {clientId:'chess2_'+myId, reconnectPeriod:3000});
+  mqttClient.on('connect', () => {
+    status('Online in <b>'+esc(room)+'</b>. Take a seat.');
+    document.getElementById('connect').disabled = true;
+    document.getElementById('leave').disabled = false;
+    document.getElementById('invite').disabled = false;
+    location.hash = 'room=' + room;
+    mqttClient.subscribe(topic, () => setTimeout(() => {
+      if (S.v === 0){ S.v = 1; S.stamp = Date.now(); push(); render(); }   // empty room: we open the table
+    }, 2500));
+    render();
+  });
+  mqttClient.on('error', e => status('Connection problem: ' + e.message));
+  mqttClient.on('close', () => { if (document.getElementById('leave').disabled === false) status('Reconnecting…'); });
+  mqttClient.on('message', (_t, payload) => {
+    let inc; try { inc = JSON.parse(payload.toString()); } catch(e){ return; }
+    if (!inc || typeof inc.v !== 'number') return;
+    if (inc.v < S.v || (inc.v === S.v && inc.stamp <= S.stamp)) return;
+    S = inc; sel = null; legal = [];
+    mySeat = S.seats.findIndex(s => s && s.id === myId);
+    render();
+  });
+};
+
+document.getElementById('leave').onclick = () => {
+  if (mySeat >= 0){ S.seats[mySeat] = null; mySeat = -1; bump(); push(); }
+  if (mqttClient){ mqttClient.end(true); mqttClient = null; }
+  document.getElementById('connect').disabled = false;
+  document.getElementById('leave').disabled = true;
+  document.getElementById('invite').disabled = true;
+  status('Offline — hot-seat mode: you control every side.');
+  render();
+};
+
+document.getElementById('view').onclick = () => setView(view + 1);
+
+document.getElementById('invite').onclick = async () => {
+  const link = location.href;
+  try { await navigator.clipboard.writeText(link); status('Invite link copied \u2014 send it to your friends.'); }
+  catch(e){ status('Send them this link: <b>' + esc(link) + '</b>'); }
+};
+
+document.getElementById('reset').onclick = () => {
+  const seats = S.seats, v = S.v;
+  S = freshState(); S.seats = seats; S.v = v + 1; S.stamp = Date.now();
+  S.log.unshift('New game.');
+  sel = null; legal = []; push(); render();
+};
+
+document.getElementById('resign').onclick = () => {
+  if (mySeat < 0 || !S.alive[mySeat]) return;
+  S.alive[mySeat] = false;
+  wipe(S, mySeat);
+  S.log.unshift(NAMES[mySeat] + ' resigned.');
+  if (S.turn === mySeat){ let t = S.turn; for (let i=0;i<4;i++){ t=(t+1)%4; if (S.alive[t]) break; } S.turn = t; }
+  if (S.alive.filter(Boolean).length <= 1) S.over = true;
+  bump(); push(); render();
+};
+
+/* --------------------------- boot ----------------------------- */
+S = freshState();
+// long random code: the broker is public, so a guessable room is a spectator seat
+const fromLink = new URLSearchParams(location.hash.slice(1)).get('room');
+document.getElementById('room').value = fromLink ||
+  'table-' + Array.from(crypto.getRandomValues(new Uint8Array(5)), b => b.toString(36).padStart(2,'0')).join('').slice(0,8);
+setView(0);
+render();
+loadArt();
+if (fromLink) document.getElementById('connect').click();   // opened from an invite link
+</script>
+</body>
+</html>
